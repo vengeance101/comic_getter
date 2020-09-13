@@ -1,6 +1,7 @@
 import json
 import re
 import operator
+import shutil
 import time
 import os
 from pathlib import Path
@@ -16,16 +17,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.chrome.options import Options
 
-
+#Pending -cbz and -k command
 class RCO_Comic:
     '''Collection of functions that allow to download a 
     readcomiconline.to comic with all it's issues.'''
 
-    def __init__(self, main_link):
+    def __init__(self):
         '''Initializes main_link attribute. '''
-
-        # Seed link that contains all the links of the different issues.
-        self.main_link = main_link
 
         # Extract data from config.json
         dir_path = Path(f"{os.path.dirname(os.path.abspath(__file__))}"
@@ -34,24 +32,60 @@ class RCO_Comic:
             data = json.load(config)
 
         self.driver_path = data["chromedriver_path"]
-        self.download_directory_path = data["download_dir"]
+        self.download_dir_path = data["download_dir"]
 
         if not data.get("visibility"):
             chrome_options = Options()
             chrome_options.add_argument("--headless")
+            chrome_options.add_experimental_option('excludeSwitches',
+                                                   ['enable-logging'])
             self.options = chrome_options
         else:
             chrome_options = Options()
             self.options = chrome_options
 
-    def get_issues_links(self):
+
+    def convert_to_cbz(self, issue_data):
+        '''Convert pages stored in target_path to .cbz file type'''
+        
+        issue_path = self.issue_dir(issue_data)
+        #In order for the zip not to include itself in the zipping process a
+        #temporal directory is provided.
+        temporal_dir = os.path.dirname(issue_path)
+        shutil.make_archive(Path(f"{temporal_dir}/{issue_data[2]}"), 'zip', 
+            issue_path)
+
+        shutil.move(Path(f"{temporal_dir}/{issue_data[2]}.zip"), 
+            Path(f"{issue_path}/{issue_data[2]}.cbz"))
+
+
+    def download_all_pages(self, issue_data):
+        ''' Download image from link.''' 
+
+        issue_path = self.issue_dir(issue_data)           
+        print(f"Started downloading {issue_data[2]}")
+
+        # Create progress bar that monitors page download.
+        with tqdm(total=len(issue_data[0])) as pbar:
+            for index, link in enumerate(issue_data[0]):
+
+                # Download image
+                page_path = Path(f"{issue_path}/page{index}.jpg")
+                page = requests.get(link, stream=True)
+                with open(page_path, 'wb') as file:
+                    file.write(page.content)
+                pbar.update(1)
+
+        print(f"Finished downloading {issue_data[2]}")
+
+    def get_issues_links(self, main_link):
         '''Gather all individual issues links from main link.'''
 
         # A chrome window is opened to bypass cloudflare.
         driver = webdriver.Chrome(executable_path=self.driver_path,
                                   options=self.options)
-        driver.set_window_size(1, 1)
-        driver.get(self.main_link)
+        driver.set_window_size(300, 500)
+        driver.get(main_link)
         # A 60 second margin is given for browser to bypass cloudflare and
         # load readcomiconline.to logo.
         wait = WebDriverWait(driver, 60)
@@ -78,7 +112,7 @@ class RCO_Comic:
 
         driver = webdriver.Chrome(executable_path=self.driver_path,
                                   options=self.options)
-        driver.set_window_size(1, 1)
+        driver.set_window_size(300, 500)
         driver.get(issue_link)
 
         # A 3600 second = 1 hour time gap is given for browser to bypass
@@ -118,16 +152,16 @@ class RCO_Comic:
         # Re module is used to get issue and comic name.
         generic_comic_name = re.compile(r"(?<=comic/)(.+?)/(.+?)(?=\?)", re.I)
         name_and_issue = re.search(generic_comic_name, issue_link)
-
-        # comic_issue_names[0] is the comic's link name, comic_issue_names[1]
-        # is the comic name and comic_issue_names[2] is the issues name.
+        
+        # comic_issue_names[0] is the issue link, comic_issue_names[1]
+        # is the comic name and comic_issue_names[2] is the issue name.
         comic_issue_name = [issue_link, name_and_issue[1], name_and_issue[2]]
         return comic_issue_name
 
     def is_comic_downloaded(self, comic_issue_name):
         '''Checks if comic has already been downloaded.'''
 
-        download_path = Path(f"{self.download_directory_path}"
+        download_path = Path(f"{self.download_dir_path}"
                              f"/{comic_issue_name[1]}/{comic_issue_name[2]}")
         if os.path.exists(download_path):
             print(f"{comic_issue_name[2]} has already been downloaded.")
@@ -135,27 +169,23 @@ class RCO_Comic:
         else:
             return False
 
-    def download_all_pages(self, issue_data):
-        ''' Download image from link.'''
-
-        download_path = Path(f"{self.download_directory_path}/"
+    def issue_dir(self, issue_data):
+        ''' Creates and returns issue download directory.'''
+        issue_path = Path(f"{self.download_dir_path}/"
                              f"{issue_data[1]}/{issue_data[2]}")
-        if not os.path.exists(download_path):
-            os.makedirs(download_path)
-        else:
-            print(f"{issue_data[2]} has already been downloaded.")
-            return
-        print(f"Started downloading {issue_data[2]}")
 
-        # Create progress bar that monitors page download.
-        with tqdm(total=len(issue_data[0])) as pbar:
-            for index, link in enumerate(issue_data[0]):
+        #Only if dir doesn't already exists it is created.
+        if not os.path.exists(issue_path):
+            os.makedirs(issue_path)
+        return issue_path
+        
+    def keep_only_cbz(self, issue_data):
+        '''Keep only .cbz file in issue directory.'''
 
-                # Download image
-                page_path = Path(f"{download_path}/page{index}.jpg")
-                page = requests.get(link, stream=True)
-                with open(page_path, 'wb') as file:
-                    file.write(page.content)
-                pbar.update(1)
-
-        print(f"Finished downloading {issue_data[2]}")
+        issue_path = self.issue_dir(issue_data)
+        #list(os.walk) creates a tuple with three lists inside 
+        #[[path],[subdirectories],[filenames]]
+        issue_structure = list(os.walk(issue_path))[0]
+        for file in issue_structure[2]:
+            if file != f"{str(issue_data[2])}.cbz":
+                os.unlink(f"{issue_path}/{file}")
